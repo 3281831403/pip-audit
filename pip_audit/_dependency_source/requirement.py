@@ -227,6 +227,18 @@ class RequirementSource(DependencySource):
         # failed to parse.
         req_specifiers: dict[str, SpecifierSet] = {}
 
+        # If the requirements file is hashed (either explicitly via
+        # `--require-hashes` or because any requirement in it carries hashes),
+        # we can't fix it: upgrading a dependency invalidates its recorded
+        # hashes, and pip-audit has no way to determine the hashes of the
+        # fixed version. Rewriting the file anyway would leave behind a
+        # requirements file that can no longer be installed, so we refuse the
+        # fix and leave the file untouched.
+        require_hashes = self._require_hashes or any(
+            isinstance(req, InstallRequirement) and req.hash_options for req in reqs
+        )
+
+        found = False
         for req in reqs:
             if (
                 isinstance(req, InstallRequirement)
@@ -247,19 +259,42 @@ class RequirementSource(DependencySource):
                     f"requirement file {filename} has invalid requirement: {str(req)}"
                 )
 
+            if (
+                isinstance(req, InstallRequirement)
+                and canonicalize_name(req.name) == fix_version.dep.canonical_name
+            ):
+                found = True
+                if (
+                    require_hashes
+                    and req.specifier.contains(fix_version.dep.version)
+                    and not req.specifier.contains(fix_version.version)
+                ):
+                    raise RequirementFixError(
+                        f"cannot fix {fix_version.dep.name} in hashed requirements file "
+                        f"{filename}: hashes for the fixed version cannot be determined; "
+                        "regenerate the file with your requirements compiler (e.g. pip-compile)"
+                    )
+
+        if not found and require_hashes:
+            # The fix would explicitly append the fixed subdependency to the
+            # file, but an unhashed line is invalid in a hashed requirements
+            # file.
+            raise RequirementFixError(
+                f"cannot fix {fix_version.dep.name} in hashed requirements file "
+                f"{filename}: hashes for the fixed version cannot be determined; "
+                "regenerate the file with your requirements compiler (e.g. pip-compile)"
+            )
+
         # Now write out the new requirements file
         with filename.open("w") as f:
-            found = False
             for req in reqs:
                 if (
                     isinstance(req, InstallRequirement)
                     and canonicalize_name(req.name) == fix_version.dep.canonical_name
+                    and req.specifier.contains(fix_version.dep.version)
+                    and not req.specifier.contains(fix_version.version)
                 ):
-                    found = True
-                    if req.specifier.contains(
-                        fix_version.dep.version
-                    ) and not req.specifier.contains(fix_version.version):
-                        req.req.specifier = SpecifierSet(f"=={fix_version.version}")
+                    req.req.specifier = SpecifierSet(f"=={fix_version.version}")
                 print(req.dumps(), file=f)
 
             # The vulnerable dependency may not be explicitly listed in the requirements file if it

@@ -17,6 +17,17 @@ All versions prior to 0.0.9 are untracked.
 * Deduplicate vulnerability results that share the same PYSEC identifier.
   ([#1068](https://github.com/pypa/pip-audit/issues/1068))
 
+* `--fix` no longer rewrites hashed requirements files, which previously
+  produced uninstallable files (the recorded hashes correspond to the
+  original distributions). The fix is now skipped with an explanatory
+  message, the file is left untouched, and the audit exits non-zero
+
+* `--fix` no longer crashes with a `PipFixError`/`NotImplementedError`
+  traceback when an individual fix fails (e.g. a failed `pip install` in a
+  local environment, or a `--locked` project's lockfile, which `pip-audit`
+  must not rewrite). The failing fix is skipped and reported, remaining
+  fixes are still applied, and the audit exits non-zero
+
 ## [2.10.1]
 
 ### Fixed

@@ -783,6 +783,131 @@ def test_requirement_source_fix_invalid_lines(req_file):
         )
 
 
+def test_requirement_source_fix_hashed_file(req_file):
+    # A hashed requirements file cannot be fixed automatically: the recorded
+    # hashes correspond to the original distributions and pip-audit cannot
+    # determine the hashes for the fixed versions. The fix must be refused
+    # and the file left untouched.
+    input_req = (
+        "flask==0.5 --hash=sha256:7a95f9a8dc0924ef318bd55b616112c70903192f524d120acc614f59547a9e1f"
+    )
+    req_path = req_file()
+    with open(req_path, "w") as f:
+        print(input_req, file=f)
+
+    source = requirement.RequirementSource([req_path])
+    with pytest.raises(DependencyFixError):
+        source.fix(
+            ResolvedFixVersion(
+                dep=ResolvedDependency(name="flask", version=Version("0.5")),
+                version=Version("1.0"),
+            )
+        )
+
+    with open(req_path) as f:
+        assert f.read().strip() == input_req
+
+
+def test_requirement_source_fix_require_hashes_flag(req_file):
+    # Even without hashes in the file itself, `--require-hashes` means the
+    # rewritten file would need hashes for the new versions, which pip-audit
+    # cannot determine.
+    req_path = req_file()
+    with open(req_path, "w") as f:
+        print("flask==0.5", file=f)
+
+    source = requirement.RequirementSource([req_path], require_hashes=True)
+    with pytest.raises(DependencyFixError):
+        source.fix(
+            ResolvedFixVersion(
+                dep=ResolvedDependency(name="flask", version=Version("0.5")),
+                version=Version("1.0"),
+            )
+        )
+
+    with open(req_path) as f:
+        assert f.read().strip() == "flask==0.5"
+
+
+def test_requirement_source_fix_hashed_file_subdependency(req_file):
+    # Fixing a subdependency would explicitly append an unhashed line to the
+    # requirements file, which is invalid for a hashed requirements file.
+    input_req = (
+        "flask==0.5 --hash=sha256:7a95f9a8dc0924ef318bd55b616112c70903192f524d120acc614f59547a9e1f"
+    )
+    req_path = req_file()
+    with open(req_path, "w") as f:
+        print(input_req, file=f)
+
+    source = requirement.RequirementSource([req_path])
+    with pytest.raises(DependencyFixError):
+        source.fix(
+            ResolvedFixVersion(
+                dep=ResolvedDependency(name="jinja2", version=Version("3.0.0")),
+                version=Version("4.0.0"),
+            )
+        )
+
+    with open(req_path) as f:
+        assert f.read().strip() == input_req
+
+
+def test_requirement_source_fix_hashed_file_rollback(req_file):
+    # If any requirements file is hashed, the whole fix is refused and every
+    # file is rolled back, including unhashed ones that were already fixed.
+    input_reqs = [
+        "flask==0.5",
+        "flask==0.5 --hash=sha256:7a95f9a8dc0924ef318bd55b616112c70903192f524d120acc614f59547a9e1f",
+    ]
+    req_paths = [req_file(), req_file()]
+    for input_req, req_path in zip(input_reqs, req_paths, strict=True):
+        with open(req_path, "w") as f:
+            print(input_req, file=f)
+
+    source = requirement.RequirementSource(req_paths)
+    with pytest.raises(DependencyFixError):
+        source.fix(
+            ResolvedFixVersion(
+                dep=ResolvedDependency(name="flask", version=Version("0.5")),
+                version=Version("1.0"),
+            )
+        )
+
+    for input_req, req_path in zip(input_reqs, req_paths, strict=True):
+        with open(req_path) as f:
+            assert f.read().strip() == input_req
+
+
+def test_requirement_source_fix_hashed_file_unaffected_requirement(req_file):
+    # A hashed requirement that already satisfies the fix version (or doesn't
+    # match the fixed dependency at all) doesn't need rewriting, but the file
+    # still can't be appended to. Sanity check that a no-op fix on another
+    # dependency is also refused rather than silently rewriting the file.
+    input_reqs = [
+        "flask==0.5 --hash=sha256:"
+        "7a95f9a8dc0924ef318bd55b616112c70903192f524d120acc614f59547a9e1f\n"
+        "requests==2.0 --hash=sha256:"
+        "9d790961ba6219e9ff7d9557622d2fe136816a264dd01d5997cfc057d804853d",
+    ]
+    req_paths = [req_file()]
+    for input_req, req_path in zip(input_reqs, req_paths, strict=True):
+        with open(req_path, "w") as f:
+            print(input_req, file=f)
+
+    source = requirement.RequirementSource(req_paths)
+    with pytest.raises(DependencyFixError):
+        source.fix(
+            ResolvedFixVersion(
+                dep=ResolvedDependency(name="requests", version=Version("2.0")),
+                version=Version("2.1"),
+            )
+        )
+
+    for input_req, req_path in zip(input_reqs, req_paths, strict=True):
+        with open(req_path) as f:
+            assert f.read().strip() == input_req
+
+
 def test_requirement_source_disable_pip(req_file):
     source = _init_requirement([(req_file(), "flask==2.0.1")], disable_pip=True, no_deps=True)
 

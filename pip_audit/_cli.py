@@ -17,6 +17,7 @@ from typing import IO, NoReturn, cast
 from pip_audit import __version__
 from pip_audit._audit import AuditOptions, Auditor
 from pip_audit._dependency_source import (
+    DependencyFixError,
     DependencySource,
     DependencySourceError,
     PipSource,
@@ -607,9 +608,13 @@ def audit() -> None:  # pragma: no cover
                         source.fix(fix)
                         fixed_pkg_count += 1
                         fixed_vuln_count += len(result[fix.dep])
-                    except DependencySourceError as dse:
-                        skip_reason = str(dse)
-                        logger.debug(skip_reason)
+                    except DependencyFixError as dfe:
+                        # A single dependency that can't be fixed shouldn't
+                        # prevent the remaining fixes from being applied. The
+                        # skipped fix is reported in the formatted output and
+                        # the final exit code is non-zero.
+                        skip_reason = str(dfe)
+                        logger.warning(f"skipping fix for {fix.dep.name}: {skip_reason}")
                         fix = SkippedFixVersion(fix.dep, skip_reason)
                 fixes.append(fix)
 

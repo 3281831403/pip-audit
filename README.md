@@ -413,6 +413,17 @@ flask 0.5     PYSEC-2019-179 1.0          Successfully upgraded flask (0.5 => 1.
 flask 0.5     PYSEC-2018-66  0.12.3       Successfully upgraded flask (0.5 => 1.0)
 ```
 
+`--fix` cannot rewrite hashed requirements files (i.e. `--require-hashes`, or
+any requirements file containing `--hash` options), since upgrading a
+dependency would invalidate its recorded hashes and `pip-audit` cannot
+determine the hashes of the fixed versions. Similarly, `--fix` does not
+rewrite lockfiles (`--locked`), since those are managed by their packaging
+tool. In both cases the file is left untouched, the fix is reported as
+skipped, and `pip-audit` exits with a non-zero status; regenerate the file
+with your requirements compiler (e.g. `pip-compile`) or packaging tool
+instead. A fix that fails for one dependency does not prevent fixes for the
+remaining dependencies from being applied.
+
 ## Troubleshooting
 
 Have you resolved a problem with `pip-audit`? Help us by contributing to this

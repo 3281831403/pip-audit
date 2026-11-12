@@ -11,6 +11,7 @@ from pip_audit._cli import (
     VulnerabilityDescriptionChoice,
     VulnerabilityServiceChoice,
 )
+from pip_audit._dependency_source import DependencyFixError
 
 
 class TestOutputFormatChoice:
@@ -232,3 +233,101 @@ def test_environment_variable(monkeypatch):
     assert args.output == Path("/tmp/fake")
     assert not args.progress_spinner
     assert args.vulnerability_service == VulnerabilityServiceChoice.Osv
+
+
+def test_fix_hashed_requirements_skipped(monkeypatch, capsys, caplog, tmp_path, vuln_service):
+    # End-to-end, offline: auditing a hashed requirements file with `--fix`
+    # must not rewrite the file (pip-audit can't determine the hashes of the
+    # fixed versions), must report the skipped fix, and must exit non-zero.
+    req_content = (
+        "foo==1.0.0 --hash=sha256:7a95f9a8dc0924ef318bd55b616112c70903192f524d120acc614f59547a9e1f"
+    )
+    req_path = tmp_path / "requirements.txt"
+    req_path.write_text(req_content + "\n")
+
+    monkeypatch.setattr(pip_audit._cli, "PyPIService", lambda *a, **kw: vuln_service())
+
+    parser = pip_audit._cli._parser()
+    monkeypatch.setattr(
+        pip_audit._cli,
+        "_parse_args",
+        lambda *a: parser.parse_args(
+            [
+                "-r",
+                str(req_path),
+                "--require-hashes",
+                "--disable-pip",
+                "--fix",
+                "--progress-spinner",
+                "off",
+            ]
+        ),
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        pip_audit._cli.audit()
+    assert excinfo.value.code == 1
+
+    # The requirements file is left untouched.
+    assert req_path.read_text() == req_content + "\n"
+
+    # The skipped fix is surfaced both in the formatted output and in the logs.
+    captured = capsys.readouterr()
+    assert "Failed to fix foo" in captured.out
+    assert "fixed 0 vulnerabilities in 0 packages" in captured.err
+    assert "skipping fix for foo" in caplog.text
+
+
+def test_fix_failure_does_not_stop_other_fixes(monkeypatch, capsys):
+    # A `DependencyFixError` for one package must not prevent the remaining
+    # fixes from being applied, and the overall exit code must be non-zero.
+    applied = []
+
+    def _fix(fix):
+        if fix.dep.name == "bad":
+            raise DependencyFixError("cannot be fixed")
+        applied.append(fix.dep.name)
+
+    dummysource = pretend.stub(fix=_fix)
+    monkeypatch.setattr(pip_audit._cli, "PipSource", lambda *a, **kw: dummysource)
+
+    parser = pip_audit._cli._parser()
+    monkeypatch.setattr(pip_audit._cli, "_parse_args", lambda *a: parser.parse_args(["--fix"]))
+
+    result = [
+        (
+            pretend.stub(
+                is_skipped=lambda: False,
+                name=name,
+                canonical_name=name,
+                version=1,
+            ),
+            [
+                pretend.stub(
+                    fix_versions=[2],
+                    id="foo",
+                    aliases=set(),
+                    has_any_id=lambda x: False,
+                )
+            ],
+        )
+        for name in ("bad", "good")
+    ]
+
+    auditor = pretend.stub(audit=lambda a: result)
+    monkeypatch.setattr(pip_audit._cli, "Auditor", lambda *a, **kw: auditor)
+
+    resolve_fix_versions = [
+        pretend.stub(is_skipped=lambda: False, dep=spec, version=2) for spec, _ in result
+    ]
+    monkeypatch.setattr(pip_audit._cli, "resolve_fix_versions", lambda *a: resolve_fix_versions)
+
+    with pytest.raises(SystemExit) as excinfo:
+        pip_audit._cli.audit()
+    assert excinfo.value.code == 1
+
+    # The fix for "good" was applied despite "bad" failing.
+    assert applied == ["good"]
+
+    captured = capsys.readouterr()
+    assert "fixed 1 vulnerability in 1 package" in captured.err

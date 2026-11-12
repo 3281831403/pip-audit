@@ -1,7 +1,8 @@
 import pytest
 from packaging.version import Version
 
-from pip_audit._dependency_source import DependencySourceError, PyLockSource
+from pip_audit._dependency_source import DependencyFixError, DependencySourceError, PyLockSource
+from pip_audit._fix import ResolvedFixVersion
 from pip_audit._service import ResolvedDependency, SkippedDependency
 
 
@@ -40,3 +41,19 @@ class TestPyLockSource:
 
         with pytest.raises(DependencySourceError, match=error):
             list(source.collect())
+
+    def test_fix_not_supported(self, asset):
+        # Lockfiles are managed by their packaging tool, so `pip-audit`
+        # refuses to rewrite them. The failure must be a `DependencyFixError`
+        # (not a bare `NotImplementedError`) so that the CLI can skip the fix
+        # gracefully and continue with any remaining ones.
+        pylock = asset("pylock.basic.toml")
+        source = PyLockSource([pylock])
+
+        with pytest.raises(DependencyFixError, match="lockfiles cannot be fixed directly"):
+            source.fix(
+                ResolvedFixVersion(
+                    dep=ResolvedDependency(name="attrs", version=Version("25.1.0")),
+                    version=Version("25.2.0"),
+                )
+            )
